@@ -51,8 +51,7 @@ import org.apache.spark.util.ArrayImplicits._
 private[kafka010] class KafkaOffsetReaderAdmin(
     consumerStrategy: ConsumerStrategy,
     override val driverKafkaParams: ju.Map[String, Object],
-    readerOptions: CaseInsensitiveMap[String],
-    driverGroupIdPrefix: String) extends KafkaOffsetReader with Logging {
+    readerOptions: CaseInsensitiveMap[String]) extends KafkaOffsetReader with Logging {
 
   private[kafka010] val maxOffsetFetchAttempts =
     readerOptions.getOrElse(KafkaSourceProvider.FETCH_OFFSET_NUM_RETRY, "3").toInt
@@ -109,7 +108,7 @@ private[kafka010] class KafkaOffsetReaderAdmin(
    * Whether we should divide Kafka TopicPartitions with a lot of data into smaller Spark tasks.
    */
   private def shouldDivvyUpLargePartitions(offsetRanges: Seq[KafkaOffsetRange]): Boolean = {
-    minPartitions.map(_ > offsetRanges.size).getOrElse(false) ||
+    minPartitions.exists(_ > offsetRanges.size) ||
     offsetRanges.exists(_.size > maxRecordsPerPartition.getOrElse(Long.MaxValue))
   }
 
@@ -133,12 +132,10 @@ private[kafka010] class KafkaOffsetReaderAdmin(
     val partitions = consumerStrategy.assignedTopicPartitions(admin)
     // Obtain TopicPartition offsets with late binding support
     offsetRangeLimit match {
-      case EarliestOffsetRangeLimit => partitions.map {
-        case tp => tp -> KafkaOffsetRangeLimit.EARLIEST
-      }.toMap
-      case LatestOffsetRangeLimit => partitions.map {
-        case tp => tp -> KafkaOffsetRangeLimit.LATEST
-      }.toMap
+      case EarliestOffsetRangeLimit =>
+        partitions.map(tp => tp -> KafkaOffsetRangeLimit.EARLIEST).toMap
+      case LatestOffsetRangeLimit =>
+        partitions.map(tp => tp -> KafkaOffsetRangeLimit.LATEST).toMap
       case SpecificOffsetRangeLimit(partitionOffsets) =>
         validateTopicPartitions(partitions, partitionOffsets)
       case SpecificTimestampRangeLimit(partitionTimestamps, strategyOnNoMatchingStartingOffset) =>
@@ -348,6 +345,15 @@ private[kafka010] class KafkaOffsetReaderAdmin(
           }
         } while (incorrectOffsets.nonEmpty && attempt < maxOffsetFetchAttempts)
 
+        if (incorrectOffsets.nonEmpty) {
+          implicit val topicOrdering: Ordering[TopicPartition] = Ordering.by(t => t.topic())
+          val incorrectOffsetsStr = incorrectOffsets.sorted.map { case (tp, prev, fetched) =>
+            s"{topic: $tp, knownOffset: $prev, obtainedOffset: $fetched}"
+          }.mkString(", ")
+          throw new IllegalStateException("Failed to obtain valid offsets after " +
+            s"$maxOffsetFetchAttempts attempts for topics $incorrectOffsetsStr")
+        }
+
         logDebug(s"Got latest offsets for partitions: $partitionOffsets")
         partitionOffsets
       }
@@ -386,8 +392,8 @@ private[kafka010] class KafkaOffsetReaderAdmin(
       val fromTopics = fromPartitionOffsets.keySet.toList.sorted.mkString(",")
       val untilTopics = untilPartitionOffsets.keySet.toList.sorted.mkString(",")
       throw new IllegalStateException("different topic partitions " +
-        s"for starting offsets topics[${fromTopics}] and " +
-        s"ending offsets topics[${untilTopics}]")
+        s"for starting offsets topics[$fromTopics] and " +
+        s"ending offsets topics[$untilTopics]")
     }
 
     // Calculate offset ranges
@@ -458,7 +464,7 @@ private[kafka010] class KafkaOffsetReaderAdmin(
       // We cannot get from offsets for some partitions. It means they got deleted.
       val deletedPartitions = newPartitions.diff(newPartitionInitialOffsets.keySet)
       reportDataLoss(
-        s"Cannot find earliest offsets of ${deletedPartitions}. Some data may have been missed",
+        s"Cannot find earliest offsets of $deletedPartitions. Some data may have been missed",
         () =>
           KafkaExceptions.initialOffsetNotFoundForPartitions(deletedPartitions))
     }

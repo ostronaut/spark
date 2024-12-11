@@ -95,8 +95,7 @@ class KafkaOffsetReaderSuite extends QueryTest with SharedSparkSession with Kafk
     val reader = new KafkaOffsetReaderAdmin(
       SubscribeStrategy(Seq()),
       KafkaSourceProvider.kafkaParamsForDriver(kafkaParams),
-      CaseInsensitiveMap(Map.empty),
-      ""
+      CaseInsensitiveMap(Map.empty)
     )
     assert(reader.isolationLevel === isolationLevel)
   }

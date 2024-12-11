@@ -60,7 +60,7 @@ private[kafka010] class KafkaOffsetReaderConsumer(
    * [[UninterruptibleThread]]. In the case of streaming queries, we are already running in an
    * [[UninterruptibleThread]], however for batch mode this is not the case.
    */
-  val uninterruptibleThreadRunner = new UninterruptibleThreadRunner("Kafka Offset Reader")
+  private val uninterruptibleThreadRunner = new UninterruptibleThreadRunner("Kafka Offset Reader")
 
   /**
    * Place [[groupId]] and [[nextId]] here so that they are initialized before any consumer is
@@ -111,7 +111,7 @@ private[kafka010] class KafkaOffsetReaderConsumer(
    * Whether we should divide Kafka TopicPartitions with a lot of data into smaller Spark tasks.
    */
   private def shouldDivvyUpLargePartitions(offsetRanges: Seq[KafkaOffsetRange]): Boolean = {
-    minPartitions.map(_ > offsetRanges.size).getOrElse(false) ||
+    minPartitions.exists(_ > offsetRanges.size) ||
     offsetRanges.exists(_.size > maxRecordsPerPartition.getOrElse(Long.MaxValue))
   }
 
@@ -155,12 +155,10 @@ private[kafka010] class KafkaOffsetReaderConsumer(
     val partitions = fetchTopicPartitions()
     // Obtain TopicPartition offsets with late binding support
     offsetRangeLimit match {
-      case EarliestOffsetRangeLimit => partitions.map {
-        case tp => tp -> KafkaOffsetRangeLimit.EARLIEST
-      }.toMap
-      case LatestOffsetRangeLimit => partitions.map {
-        case tp => tp -> KafkaOffsetRangeLimit.LATEST
-      }.toMap
+      case EarliestOffsetRangeLimit =>
+        partitions.map(tp => tp -> KafkaOffsetRangeLimit.EARLIEST).toMap
+      case LatestOffsetRangeLimit =>
+        partitions.map(tp => tp -> KafkaOffsetRangeLimit.LATEST).toMap
       case SpecificOffsetRangeLimit(partitionOffsets) =>
         validateTopicPartitions(partitions, partitionOffsets)
       case SpecificTimestampRangeLimit(partitionTimestamps, strategy) =>
@@ -340,6 +338,25 @@ private[kafka010] class KafkaOffsetReaderConsumer(
       partitionOffsets
     }, fetchingEarliestOffset = true)
 
+  override def fetchEarliestOffsets(
+      newPartitions: Seq[TopicPartition]): Map[TopicPartition, Long] = {
+    if (newPartitions.isEmpty) {
+      Map.empty[TopicPartition, Long]
+    } else {
+      partitionsAssignedToConsumer(partitions => {
+        // Get the earliest offset of each partition
+        consumer.seekToBeginning(partitions)
+        val partitionOffsets = newPartitions.filter { p =>
+          // When deleting topics happen at the same time, some partitions may not be in
+          // `partitions`. So we need to ignore them
+          partitions.contains(p)
+        }.map(p => p -> consumer.position(p)).toMap
+        logDebug(s"Got earliest offsets for new partitions: $partitionOffsets")
+        partitionOffsets
+      }, fetchingEarliestOffset = true)
+    }
+  }
+
   /**
    * Specific to `KafkaOffsetReaderConsumer`:
    * Kafka may return earliest offsets when we are requesting latest offsets if `poll` is called
@@ -398,30 +415,21 @@ private[kafka010] class KafkaOffsetReaderConsumer(
           }
         } while (incorrectOffsets.nonEmpty && attempt < maxOffsetFetchAttempts)
 
+        if (incorrectOffsets.nonEmpty) {
+          implicit val topicOrdering: Ordering[TopicPartition] = Ordering.by(t => t.topic())
+          val incorrectOffsetsStr = incorrectOffsets.sorted.map { case (tp, prev, fetched) =>
+            s"{topic: $tp, knownOffset: $prev, obtainedOffset: $fetched}"
+          }.mkString(", ")
+          throw new IllegalStateException("Failed to obtain valid offsets after " +
+            s"$maxOffsetFetchAttempts attempts for topics $incorrectOffsetsStr")
+        }
+
         logDebug(s"Got latest offsets for partition : $partitionOffsets")
         partitionOffsets
       }
     }
   }
 
-  override def fetchEarliestOffsets(
-      newPartitions: Seq[TopicPartition]): Map[TopicPartition, Long] = {
-    if (newPartitions.isEmpty) {
-      Map.empty[TopicPartition, Long]
-    } else {
-      partitionsAssignedToConsumer(partitions => {
-        // Get the earliest offset of each partition
-        consumer.seekToBeginning(partitions)
-        val partitionOffsets = newPartitions.filter { p =>
-          // When deleting topics happen at the same time, some partitions may not be in
-          // `partitions`. So we need to ignore them
-          partitions.contains(p)
-        }.map(p => p -> consumer.position(p)).toMap
-        logDebug(s"Got earliest offsets for new partitions: $partitionOffsets")
-        partitionOffsets
-      }, fetchingEarliestOffset = true)
-    }
-  }
 
   override def getOffsetRangesFromUnresolvedOffsets(
       startingOffsets: KafkaOffsetRangeLimit,
@@ -436,8 +444,8 @@ private[kafka010] class KafkaOffsetReaderConsumer(
       val fromTopics = fromPartitionOffsets.keySet.toList.sorted.mkString(",")
       val untilTopics = untilPartitionOffsets.keySet.toList.sorted.mkString(",")
       throw new IllegalStateException("different topic partitions " +
-        s"for starting offsets topics[${fromTopics}] and " +
-        s"ending offsets topics[${untilTopics}]")
+        s"for starting offsets topics[$fromTopics] and " +
+        s"ending offsets topics[$untilTopics]")
     }
 
     // Calculate offset ranges
@@ -507,7 +515,7 @@ private[kafka010] class KafkaOffsetReaderConsumer(
       // We cannot get from offsets for some partitions. It means they got deleted.
       val deletedPartitions = newPartitions.diff(newPartitionInitialOffsets.keySet)
       reportDataLoss(
-        s"Cannot find earliest offsets of ${deletedPartitions}. Some data may have been missed",
+        s"Cannot find earliest offsets of $deletedPartitions. Some data may have been missed",
         () =>
           KafkaExceptions.initialOffsetNotFoundForPartitions(deletedPartitions))
     }

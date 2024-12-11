@@ -74,8 +74,6 @@ private[kafka010] trait KafkaOffsetReader {
    * - isStartingOffsets = false => implementation should provide the offset same as 'latest'
    * - isStartingOffsets = true  => implementation should follow the strategy on non-matching
    *                                starting offset, passed as `strategyOnNoMatchStartingOffset`
-   *
-   * @param partitionTimestamps the timestamp per topic-partition.
    */
   def fetchSpecificTimestampBasedOffsets(
       partitionTimestamps: Map[TopicPartition, Long],
@@ -93,8 +91,6 @@ private[kafka010] trait KafkaOffsetReader {
    * - isStartingOffsets = false => implementation should provide the offset same as 'latest'
    * - isStartingOffsets = true  => implementation should follow the strategy on non-matching
    *                                starting offset, passed as `strategyOnNoMatchStartingOffset`
-   *
-   * @param timestamp the timestamp.
    */
   def fetchGlobalTimestampBasedOffsets(
       timestamp: Long,
@@ -109,6 +105,12 @@ private[kafka010] trait KafkaOffsetReader {
   def fetchEarliestOffsets(): Map[TopicPartition, Long]
 
   /**
+   * Fetch the earliest offsets for specific topic partitions.
+   * The return result may not contain some partitions if they are deleted.
+   */
+  def fetchEarliestOffsets(newPartitions: Seq[TopicPartition]): Map[TopicPartition, Long]
+
+  /**
    * Fetch the latest offsets for the topic partitions that are indicated
    * in the [[ConsumerStrategy]].
    *
@@ -120,12 +122,6 @@ private[kafka010] trait KafkaOffsetReader {
    * after retrying.
    */
   def fetchLatestOffsets(knownOffsets: Option[PartitionOffsetMap]): PartitionOffsetMap
-
-  /**
-   * Fetch the earliest offsets for specific topic partitions.
-   * The return result may not contain some partitions if they are deleted.
-   */
-  def fetchEarliestOffsets(newPartitions: Seq[TopicPartition]): Map[TopicPartition, Long]
 
   /**
    * Return the offset ranges for a Kafka batch query. If `minPartitions` is set, this method may
@@ -162,8 +158,7 @@ private[kafka010] object KafkaOffsetReader extends Logging {
         driverGroupIdPrefix)
     } else {
       logDebug("Creating new Admin based offset reader")
-      new KafkaOffsetReaderAdmin(consumerStrategy, driverKafkaParams, readerOptions,
-        driverGroupIdPrefix)
+      new KafkaOffsetReaderAdmin(consumerStrategy, driverKafkaParams, readerOptions)
     }
   }
 }
