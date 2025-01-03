@@ -320,7 +320,7 @@ abstract class Optimizer(catalogManager: CatalogManager)
       // Put `InsertMapSortInGroupingExpressions` after `PullOutGroupingExpressions`,
       // so the grouping keys can only be attribute and literal which makes
       // `InsertMapSortInGroupingExpressions` easy to insert `MapSort`.
-      InsertMapSortInGroupingExpressions,
+//      InsertMapSortInGroupingExpressions,
       ComputeCurrentTime,
       ReplaceCurrentLike(catalogManager),
       SpecialDatetimeValues,
