@@ -275,8 +275,7 @@ object UnresolvedTVFAliases {
  */
 case class UnresolvedAttribute(nameParts: Seq[String]) extends Attribute with Unevaluable {
 
-  def name: String =
-    nameParts.map(n => if (n.contains(".")) s"`$n`" else n).mkString(".")
+  def name: String = sql
 
   override def exprId: ExprId = throw new UnresolvedException("exprId")
   override def dataType: DataType = throw new UnresolvedException("dataType")
